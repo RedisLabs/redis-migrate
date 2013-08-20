@@ -1,0 +1,2 @@
+Small utility for interactively migrating a bunch of redis servers to another bunch of redis servers.
+Run with --help for help.
