@@ -32,17 +32,14 @@ def getRedisList(urls):
             fail('Invalid scheme %s for %s, aborting'%(url.scheme,srcUrl))
         r = redis.Redis(host=url.hostname, port=(url.port if url.port else 6379), password=url.password)
         try:
-            r.ping()
+            ver = r.info()['redis_version']
+            r.ver = ver
         except redis.ConnectionError as e:
             fail('Failed connecting (%s) to %s, aborting'%(e,srcUrl))
         res.append(r)            
     return res
    
 
-def updateStatus(txt):
-    i, s = txt.split(',',1)
-    syncProgressWidgets[int(i)].set_text(s)
-    
 def writeLn(y, x, txt, attr=0):
     stdscr.move(y,0)
     stdscr.clrtoeol()
@@ -58,10 +55,22 @@ def checkInput():
     if c == 'q':
         sys.exit()
     return c
+
+def compareVersion(va, vb):
+    for vaPart,vbPart in zip([int(x) for x in va.split('.')], [int(x) for x in vb.split('.')]):
+        if vaPart > vbPart:
+            return 1
+        elif vaPart < vbPart:
+            return -1
+    return 0
+
         
 def signalWinch(signum, frame):
     pass
     
+def valOrNA(x):
+    return x if x != None else 'N/A'
+
 def bytesToStr(bytes):
     if bytes < 1024:
         return '%dB'%bytes
@@ -93,16 +102,20 @@ if __name__ == '__main__':
     
     try:
         # Get aggregate sizes from sources
-        keys = 0
+        keys = None
         mem = 0
         for r in srcs:
-            mem += r.info('memory')['used_memory']
-            ks = r.info('keyspace')
-            for db in ks:
-                keys += ks[db]['keys']
+            info = r.info()
+            mem += info['used_memory']
+            if compareVersion(r.ver, '2.6') >= 0:
+                ks = r.info('keyspace')
+                if keys == None:
+                    keys = 0
+                for db in ks:
+                    keys += ks[db]['keys']
                 
 
-        writeLn(0, 0, 'Syncing %.2fMB and %d keys from %d redises'%(float(mem)/(1024*1024), keys, len(srcs)))
+        writeLn(0, 0, 'Syncing %.2fMB and %s keys from %d redises'%(float(mem)/(1024*1024), valOrNA(keys), len(srcs)))
         writeLn(1, 0, 'q - Quit, s - Start', curses.A_BOLD)
         while checkInput() != 's':
             pass
@@ -110,8 +123,11 @@ if __name__ == '__main__':
         
         # Start replication from all slaves
         for sr,dr in zip(srcs,dsts):
-            dr.config_set('slave-read-only', 'yes')
-            dr.config_set('masterauth', redisPassword(sr) or '')
+            if compareVersion(dr.ver, '2.6') >= 0:
+                dr.config_set('slave-read-only', 'yes')
+            drAuth = dr.config_get('masterauth')['masterauth']
+            if redisPassword(sr) != drAuth: # Avoid setting the master auth if not required since on redis 2.2 theres no way to set a null password
+                dr.config_set('masterauth', redisPassword(sr) or '')
             dr.slaveof(redisHost(sr), redisPort(sr))
 
         # Wait for dsts to be in sync
@@ -120,13 +136,12 @@ if __name__ == '__main__':
             y = 2
             for dr,sr in zip(dsts,srcs):
                 y += 1
-                replInfo = dr.info('replication')
-                memInfo = dr.info('memory')
-                if replInfo['role'] != 'slave':
-                    writeLn(y, 1, 'Error: dest %s:%s configured as %s'%(redisHost(dr), redisPort(dr), replInfo['role']))
+                info = dr.info()
+                if info['role'] != 'slave':
+                    writeLn(y, 1, 'Error: dest %s:%s configured as %s'%(redisHost(dr), redisPort(dr), info['role']))
                     continue
-                writeLn(y, 1, '%s:%s ==> %s:%s - link status: %s, sync in progress: %s, %s left, used memory %.2fMB'%(redisHost(sr), redisPort(sr), redisHost(dr), redisPort(dr), replInfo['master_link_status'], 'yes' if replInfo['master_sync_in_progress'] else 'no', bytesToStr(replInfo.get('master_sync_left_bytes', 0)), float(memInfo['used_memory'])/(1024*1024)))
-                if replInfo['master_link_status'] == 'up':
+                writeLn(y, 1, '%s:%s ==> %s:%s - link status: %s, sync in progress: %s, %s left, used memory %.2fMB'%(redisHost(sr), redisPort(sr), redisHost(dr), redisPort(dr), info['master_link_status'], 'yes' if info['master_sync_in_progress'] else 'no', bytesToStr(info.get('master_sync_left_bytes', 0)), float(info['used_memory'])/(1024*1024)))
+                if info['master_link_status'] == 'up':
                     synced += 1
             if synced == len(dsts):
                 stdscr.move(3,0)
@@ -140,22 +155,30 @@ if __name__ == '__main__':
         while True:
             y = 5
             for dr,sr in zip(dsts,srcs):
-                slaves = [client for client in sr.client_list() if 'S' in client['flags']]
-                maxOutBuff = max([int(slave['omem']) for slave in slaves])
-                readonly = dr.config_get('slave-read-only').get('slave-read-only')
-                writeLn(y, 1, '%s:%s ==> %s:%s: replication buf: %s, dst readonly: %s  '%(redisHost(sr), redisPort(sr), redisHost(dr), redisPort(dr), bytesToStr(maxOutBuff), readonly))
+                maxOutBuff = None
+                maxOutBuffCommands = None
+                if compareVersion(sr.ver, '2.4') >= 0:
+                    slaves = [client for client in sr.client_list() if 'S' in client['flags']]
+                    if compareVersion(sr.ver, '2.6') >= 0:
+                        maxOutBuff = max([int(slave['omem']) for slave in slaves])
+                    maxOutBuffCommands = max([(1 if int(slave['obl']) > 0 else 0) + int(slave['oll']) for slave in slaves])
+                readonly = dr.config_get('slave-read-only').get('slave-read-only') if compareVersion(dr.ver, '2.6') >= 0 else 'N/A'
+                writeLn(y, 1, '%s:%s ==> %s:%s: replication buf size %s, replication buf commands: %s, dst readonly: %s  '%(redisHost(sr), redisPort(sr), redisHost(dr), redisPort(dr), bytesToStr(maxOutBuff) if maxOutBuff != None else 'N/A', valOrNA(maxOutBuffCommands), readonly))
                 y += 1
             c = checkInput()
             if c == 'e':
                 for dr in dsts:
-                    dr.config_set('slave-read-only', 'no')
+                    if compareVersion(dr.ver, '2.6') >= 0:
+                        dr.config_set('slave-read-only', 'no')
                 writeLn(3, 1, 'Replication links are up and writes enabled on destinations, wait for master replication buffers to flush before disconnecting from sources')
                 writeLn(1, 0, 'q - quit, e - Enable writes on destinations, m - Make destinations masters and quit', curses.A_BOLD)
             if c == 'm':
                 for dr in dsts:
                     dr.slaveof('no','one')
-                    dr.config_set('slave-read-only', 'no')
-                    dr.config_set('masterauth', '')
+                    if compareVersion(dr.ver, '2.6') >= 0:
+                        dr.config_set('slave-read-only', 'no')
+                    if dr.config_get('masterauth')['masterauth']: # Avoid zeroing the master auth if not required, becaues of bug in v2.2 where you can put a null value in the mastaer auth
+                        dr.config_set('masterauth', '')
                 sys.exit()
             
     finally:
