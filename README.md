@@ -1,4 +1,4 @@
 Small utility for interactively migrating a bunch of redis servers to another bunch of redis servers.
 Run with --help for help.
 
-[![githalytics.com alpha](https://cruel-carlota.pagodabox.com/b77df036edb574a41b581a04f693ae73 "githalytics.com")](http://githalytics.com/GarantiaData/redis-migrate)
+[![githalytics.com alpha](https://cruel-carlota.pagodabox.com/e907837e7c5a0bb078bbb3a75e381a3f "githalytics.com")](http://githalytics.com/RedisLabs/redis-migrate)
