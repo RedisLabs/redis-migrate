@@ -10,7 +10,7 @@ import curses
 import signal
 
 def fail(msg):
-    print >> sys.stderr, msg
+    print(msg)
     exit(1)
 
 def redisHost(r):
@@ -30,7 +30,7 @@ def getRedisList(urls):
             srcUrl = 'redis://' + srcUrl
             url = urlparse.urlparse(srcUrl)
         if url.scheme != 'redis':
-            fail('Invalid scheme %s for %s, aborting'%(url.scheme,srcUrl))
+            fail('Invalid scheme %s for %s, aborting. url example: redis://127.0.0.1:6379'%(url.scheme,srcUrl))
         r = redis.Redis(host=url.hostname, port=(url.port if url.port else 6379), password=url.password)
         try:
             ver = r.info()['redis_version']
