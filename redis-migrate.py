@@ -2,7 +2,8 @@
 import sys
 import redis
 import argparse
-import urlparse
+#import urlparse
+from urllib.parse import urlparse
 import time
 import os
 import curses
@@ -24,7 +25,7 @@ def redisPassword(r):
 def getRedisList(urls):
     res = []
     for srcUrl in urls:
-        url = urlparse.urlparse(srcUrl)
+        url = urlparse(srcUrl)
         if not url.scheme:
             srcUrl = 'redis://' + srcUrl
             url = urlparse.urlparse(srcUrl)
